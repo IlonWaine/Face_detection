@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vision Face Agent</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <style>
+        body { background-color: #0f172a; color: #f8fafc; }
+    </style>
+</head>
+<body class="font-sans min-h-screen flex flex-col items-center p-8">
+    <header class="mb-10 text-center">
+        <h1 class="text-4xl font-extrabold text-indigo-400 mb-2">👁️ Vision Agent Dashboard</h1>
+        <p class="text-slate-400">Система детекції та валідації облич в реальному часі на базі MediaPipe & FastAPI</p>
+    </header>
+
+    <main class="w-full max-w-6xl grid grid-cols-1 md:grid-cols-2 gap-8">
+        <!-- Webcam -->
+<div class="bg-slate-800 p-6 rounded-2xl shadow-xl border border-slate-700">
+    <h2 class="text-xl font-bold text-indigo-300 mb-4 flex items-center gap-2">
+        <span class="animate-pulse w-3 h-3 bg-red-500 rounded-full"></span> Live Stream
+    </h2>
+    
+    <div class="relative w-full aspect-video bg-slate-950 rounded-xl overflow-hidden group">
+        <video id="webcam" autoplay playsinline class="w-full h-full object-cover hidden"></video>
+        
+        <canvas id="webcamCanvas" class="w-full h-full object-contain"></canvas>
+
+        <button id="fullscreenCam" title="Повноекранний режим" 
+                class="absolute right-4 bottom-4 p-2.5 bg-slate-900/80 hover:bg-slate-800 active:scale-95 text-white rounded-lg transition duration-200 backdrop-blur-sm border border-slate-700/50 opacity-0 group-hover:opacity-100 focus:opacity-100 z-10">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor" class="w-5 h-5">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75v4.5m0-4.5h-4.5m4.5 0L15 9m5.25 11.25v-4.5m0 4.5h-4.5m4.5 0L15 15" />
+            </svg>
+        </button>
+    </div>
+
+    <div class="flex gap-4 mt-4">
+        <button id="startCam" class="flex-1 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 active:scale-95 text-white font-medium rounded-xl transition duration-200">
+            Включити камеру
+        </button>
+        <button id="stopCam" class="flex-1 px-5 py-2.5 bg-rose-600 hover:bg-rose-500 active:scale-95 text-white font-medium rounded-xl transition duration-200">
+            Вимкнути камеру
+        </button>
+    </div>
+</div>
+        <!-- Static image detection -->
+        <div class="bg-slate-800 p-6 rounded-2xl shadow-xl border border-slate-700 flex flex-col justify-between">
+            <div>
+                <h2 class="text-xl font-bold text-indigo-300 mb-4">📸 Детекція на статичному фото</h2>
+                <form id="uploadForm" class="flex flex-col gap-4">
+                    <label class="flex flex-col items-center justify-center border-2 border-dashed border-slate-600 rounded-xl p-6 cursor-pointer hover:border-indigo-400 transition">
+                        <span class="text-sm text-slate-400">Оберіть файл (JPG/PNG)</span>
+                        <input type="file" id="fileInput" accept="image/*" class="hidden" required>
+                    </label>
+                    <button type="submit" class="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-2 px-4 rounded-xl transition">
+                        Обробити зображення
+                    </button>
+                </form>
+            </div>
+
+            <div class="mt-6">
+                <h3 class="text-sm font-semibold text-slate-400 mb-2">Результат аналізу:</h3>
+                <div id="resultContainer" class="hidden overflow-hidden rounded-lg border border-slate-600 bg-black aspect-video flex items-center justify-center">
+                    <img id="resultImage" class="w-full h-full object-contain" src="" alt="Результат">
+                </div>
+            </div>
+        </div>
+    </main>
+
+   <script>
+    // 1. Змінні для керування камерою
+    const webcam = document.getElementById('webcam');
+    const canvas = document.getElementById('webcamCanvas');
+    const ctx = canvas.getContext('2d');
+    const startCam = document.getElementById('startCam');
+    const stopCam = document.getElementById('stopCam');
+    const fullscreenCam = document.getElementById('fullscreenCam');
+    
+    let stream = null;
+    let ws = null; 
+    let isDetectionActive = false;
+    let latestDetections = []; // Зберігаємо останні розпізнані обличчя
+    let renderAnimationFrameId = null; // ID анімації для зупинки
+
+    // Створюємо тимчасовий canvas ОДИН РАЗ, щоб уникнути витоку пам'яті
+    const tempCanvas = document.createElement('canvas');
+    const tempCtx = tempCanvas.getContext('2d');
+
+    // 2. Безперервний цикл малювання (незалежний від мережі)
+    function renderLoop() {
+        if (!isDetectionActive) return;
+
+        // Малюємо поточний кадр з вебкамери
+        ctx.drawImage(webcam, 0, 0, canvas.width, canvas.height);
+
+        // Малюємо рамки, якщо є дані
+        if (latestDetections && latestDetections.length > 0) {
+            ctx.strokeStyle = '#22c55e';
+            ctx.lineWidth = 4;
+            ctx.fillStyle = '#22c55e';
+            ctx.font = 'bold 18px sans-serif';
+
+            latestDetections.forEach((face) => {
+                const box = face.bounding_box;
+                ctx.strokeRect(box.xmin, box.ymin, box.width, box.height);
+                ctx.fillText(`Обличчя: ${(face.score * 100).toFixed(0)}%`, box.xmin, box.ymin - 10);
+            });
+        }
+
+        // Запитуємо наступний кадр для малювання
+        renderAnimationFrameId = requestAnimationFrame(renderLoop);
+    }
+
+    // 3. Головна функція керування WebSocket-стрімом
+    function startDetectionLoop() {
+        ws = new WebSocket(`ws://${window.location.host}/api/v1/stream-detect`);
+
+        ws.onopen = () => {
+            console.log("WebSocket підключено успішно.");
+            if (isDetectionActive) sendFrame();
+        };
+
+        ws.onmessage = (event) => {
+            if (!isDetectionActive) return;
+
+            try {
+                const data = JSON.parse(event.data);
+                latestDetections = data.detections || []; // Оновлюємо дані для renderLoop
+            } catch (e) {
+                console.error("Помилка обробки даних від сервера:", e);
+            }
+
+            // Запитуємо відправку наступного кадру (з невеликою затримкою для стабільності ~30 FPS)
+            if (isDetectionActive) {
+                setTimeout(sendFrame, 1000 / 30);
+            }
+        };
+
+        ws.onclose = () => console.log("WebSocket з'єднання закрите.");
+        ws.onerror = (err) => console.error("Помилка WebSocket:", err);
+    } 
+    
+    // 4. Функція кодування кадру і відправки на сервер
+    function sendFrame() {
+        if (!ws || ws.readyState !== WebSocket.OPEN || !isDetectionActive) return;
+
+        // Оновлюємо розміри віртуального canvas, якщо вони змінилися
+        if (tempCanvas.width !== canvas.width) {
+            tempCanvas.width = canvas.width;
+            tempCanvas.height = canvas.height;
+        }
+        
+        tempCtx.drawImage(webcam, 0, 0, tempCanvas.width, tempCanvas.height);
+        
+        // Стискаємо в JPEG (0.6)
+        const dataUrl = tempCanvas.toDataURL('image/jpeg', 0.6);
+        const base64Data = dataUrl.split(',')[1]; 
+
+        ws.send(base64Data);
+    }
+
+    // 5. Повноекранний режим
+    fullscreenCam.addEventListener('click', () => {
+        if (!stream) {
+            alert("Спочатку увімкніть камеру!");
+            return;
+        }
+        if (canvas.requestFullscreen) {
+            canvas.requestFullscreen();
+        } else if (canvas.webkitRequestFullscreen) {
+            canvas.webkitRequestFullscreen();
+        } else if (canvas.msRequestFullscreen) {
+            canvas.msRequestFullscreen();
+        }
+    });
+
+    // 6. Увімкнення камери
+    startCam.addEventListener('click', async () => {
+        if (isDetectionActive || stream !== null) return; 
+
+        try {
+            startCam.disabled = true;
+            startCam.innerText = "Запуск...";
+
+            stream = await navigator.mediaDevices.getUserMedia({ 
+                video: { width: 640, height: 480 } 
+            });
+            
+            webcam.srcObject = stream;
+            
+            // Важливо: переконатися, що відео дійсно відтворюється
+            await webcam.play();
+            
+            canvas.width = webcam.videoWidth;
+            canvas.height = webcam.videoHeight;
+
+            isDetectionActive = true;
+            
+            // Запускаємо незалежні цикли: один малює, інший відправляє дані
+            renderLoop();
+            startDetectionLoop();
+            
+            startCam.innerText = "Камера працює";
+        } catch (err) {
+            alert('Помилка: Не вдалося отримати доступ до вебкамери.');
+            console.error(err);
+            
+            startCam.disabled = false;
+            startCam.innerText = "Включити камеру";
+            isDetectionActive = false;
+            stream = null;
+        }
+    });
+
+    // 7. Вимкнення камери
+    stopCam.addEventListener('click', () => {
+        isDetectionActive = false;
+        latestDetections = [];
+
+        if (renderAnimationFrameId) {
+            cancelAnimationFrame(renderAnimationFrameId);
+        }
+
+        if (ws) {
+            ws.close();
+            ws = null;
+        }
+
+        if (stream) {
+            stream.getTracks().forEach(track => track.stop());
+            webcam.srcObject = null;
+            stream = null; 
+        }
+
+        startCam.disabled = false;
+        startCam.innerText = "Включити камеру";
+
+        // Очищаємо екран
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        console.log("Стрім повністю знищено.");
+    });
+        
+    // ==========================================
+    // Обробка форм (Фото та Відео)
+    // ==========================================
+    
+    function handleUpload(formId, inputId, resultContainerId, resultMediaId, apiEndpoint, isVideo = false) {
+        const form = document.getElementById(formId);
+        const input = document.getElementById(inputId);
+        const container = document.getElementById(resultContainerId);
+        const media = document.getElementById(resultMediaId);
+        const submitBtn = form.querySelector('button[type="submit"]');
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            if (!input.files[0]) return;
+
+            const formData = new FormData();
+            formData.append('file', input.files[0]);
+
+            // Блокуємо кнопку на час завантаження
+            const originalBtnText = submitBtn.innerText;
+            submitBtn.disabled = true;
+            submitBtn.innerText = "Обробка...";
+
+            try {
+                const response = await fetch(apiEndpoint, {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (response.ok) {
+                    const blob = await response.blob();
+                    
+                    // Звільняємо пам'ять від попереднього файлу, якщо він був
+                    if (media.src) URL.revokeObjectURL(media.src);
+                    
+                    const objectURL = URL.createObjectURL(blob);
+                    media.src = objectURL;
+                    container.classList.remove('hidden');
+                    
+                    if (isVideo) media.play(); // Автозапуск відео після завантаження
+                } else {
+                    alert('Помилка при обробці файлу на сервері.');
+                }
+            } catch (err) {
+                console.error(err);
+                alert('Не вдалося зв’язатися з сервером.');
+            } finally {
+                // Повертаємо кнопку в початковий стан
+                submitBtn.disabled = false;
+                submitBtn.innerText = originalBtnText;
+            }
+        });
+    }
+
+    // Ініціалізація форм
+    handleUpload('uploadForm', 'fileInput', 'resultContainer', 'resultImage', '/api/v1/detect-image/', false);
+    handleUpload('videoForm', 'videoInput', 'videoResultContainer', 'videoResult', '/api/v1/detect-video/', true);
+
+</script>
+</body>
+</html>
