@@ -1,6 +1,8 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Response, HTTPException
 from fastapi.responses import HTMLResponse
+from fastapi.middleware.cors import CORSMiddleware # Додано імпорт
 
+from detection_visualization import visualize, resize
 
 from config import ROOT, MODEL_PATH
 
@@ -10,19 +12,18 @@ import base64
 
 from detector import PoliInputFaceDetector, IMAGE
 
-# Використовуємо менеджер життєвого циклу додатку для безпечного запуску та зупинки камери
-# @asynccontextmanager
-# async def lifespan(app: FastAPI):
-#     # Дії під час старту сервера
-#     video_stream_service.start_stream()
-#     yield
-#     # Дії під час вимкнення сервера
-#     video_stream_service.stop_stream()
-
 app = FastAPI(
     title="Vision Agent API",
     version="1.0.0",
     # lifespan=lifespan
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Дозволяє запити з будь-яких доменів (для розробки)
+    allow_credentials=False,
+    allow_methods=["*"],  # Дозволяє всі методи (GET, POST і т.д.)
+    allow_headers=["*"],  # Дозволяє всі заголовки
 )
 
 def get_html_response(file_name: str) -> HTMLResponse:
@@ -81,3 +82,39 @@ async def websocket_stream_detect(websocket: WebSocket):
             print("Користувач закрив сторінку або вимкнув камеру (WebSocket розірвано).")
 
 
+@app.post("/process-image")
+async def detect_image_endpoint(file: UploadFile = File(...)):
+    try:
+        print("Отримано запит на обробку фото!") # Перевіряємо, чи доходить запит
+        
+        contents = await file.read()
+        nparr = np.frombuffer(contents, np.uint8)
+        capture = cv.imdecode(nparr, cv.IMREAD_COLOR)
+
+        
+        if capture is None:
+            raise HTTPException(status_code=400, detail="Недійсний файл зображення")
+
+        # --- ТУТ ПОЧИНАЄТЬСЯ ВАША ЛОГІКА ---
+        print("Починаємо ресайз і детекцію...")
+        frame = resize(capture)
+        
+        with PoliInputFaceDetector(MODEL_PATH, running_mode=IMAGE) as detector:
+            detection_result = detector.detection(frame)
+            count = len(detection_result.detections) if detection_result and detection_result.detections else 0
+            print(count)
+            drawen_img = visualize(frame, detection_result)
+        # --- ТУТ ЗАКІНЧУЄТЬСЯ ВАША ЛОГІКА ---
+            
+        print("Кодуємо результат...")
+        success, encoded_image = cv.imencode('.jpg', drawen_img)
+        if not success:
+            raise HTTPException(status_code=500, detail="Помилка кодування")
+            
+        response = Response(content=encoded_image.tobytes(), media_type="image/jpeg")
+        response.headers["X-Detection-Count"] = str(count)
+        return response
+        
+    except Exception as e:
+        # ЦЕ ВРЯТУЄ НАС: виведе повну помилку в термінал замість того, щоб впасти
+        raise HTTPException(status_code=500, detail=str(e))

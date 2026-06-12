@@ -50,7 +50,7 @@
                 <h2 class="text-xl font-bold text-indigo-300 mb-4">📸 Детекція на статичному фото</h2>
                 <form id="uploadForm" class="flex flex-col gap-4">
                     <label class="flex flex-col items-center justify-center border-2 border-dashed border-slate-600 rounded-xl p-6 cursor-pointer hover:border-indigo-400 transition">
-                        <span class="text-sm text-slate-400">Оберіть файл (JPG/PNG)</span>
+                        <span id="fileNameDisplay" class="text-sm text-slate-400">Оберіть файл (JPG/PNG)</span>
                         <input type="file" id="fileInput" accept="image/*" class="hidden" required>
                     </label>
                     <button type="submit" class="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-2 px-4 rounded-xl transition">
@@ -60,7 +60,9 @@
             </div>
 
             <div class="mt-6">
-                <h3 class="text-sm font-semibold text-slate-400 mb-2">Результат аналізу:</h3>
+                <h3 class="text-sm font-semibold text-slate-400 mb-2">Результат аналізу: 
+                    <span id="detectionCount" class="text-indigo-400 font-bold hidden">0</span>
+                </h3>
                 <div id="resultContainer" class="hidden overflow-hidden rounded-lg border border-slate-600 bg-black aspect-video flex items-center justify-center">
                     <img id="resultImage" class="w-full h-full object-contain" src="" alt="Результат">
                 </div>
@@ -251,6 +253,23 @@
         const container = document.getElementById(resultContainerId);
         const media = document.getElementById(resultMediaId);
         const submitBtn = form.querySelector('button[type="submit"]');
+        const fileNameDisplay = document.getElementById('fileNameDisplay');
+
+        fileInput.addEventListener('change', (event) => {
+    const file = event.target.files[0];
+    if (file) {
+        // Оновлюємо текст назвою файлу
+        fileNameDisplay.textContent = file.name;
+        // Можна також додати трохи стилю, щоб було видно, що файл вибрано
+        fileNameDisplay.classList.add('text-indigo-300', 'font-medium');
+        fileNameDisplay.classList.remove('text-slate-400');
+    } else {
+        // Якщо користувач скасував вибір
+        fileNameDisplay.textContent = "Оберіть файл (JPG/PNG)";
+        fileNameDisplay.classList.add('text-slate-400');
+        fileNameDisplay.classList.remove('text-indigo-300', 'font-medium');
+    }
+});
 
         form.addEventListener('submit', async (e) => {
             e.preventDefault();
@@ -271,13 +290,18 @@
                 });
 
                 if (response.ok) {
+                    const count = response.headers.get("X-Detection-Count");
+                    const countElement = document.getElementById('detectionCount');
+
+                    if (count !== null) {
+                        countElement.textContent = `Виявлено облич: ${count}`;
+                        countElement.classList.remove('hidden');
+                    }
+
+                    // 2. Отримуємо саму картинку як Blob
                     const blob = await response.blob();
-                    
-                    // Звільняємо пам'ять від попереднього файлу, якщо він був
                     if (media.src) URL.revokeObjectURL(media.src);
-                    
-                    const objectURL = URL.createObjectURL(blob);
-                    media.src = objectURL;
+                    media.src = URL.createObjectURL(blob);
                     container.classList.remove('hidden');
                     
                     if (isVideo) media.play(); // Автозапуск відео після завантаження
@@ -296,8 +320,7 @@
     }
 
     // Ініціалізація форм
-    handleUpload('uploadForm', 'fileInput', 'resultContainer', 'resultImage', '/api/v1/detect-image/', false);
-    handleUpload('videoForm', 'videoInput', 'videoResultContainer', 'videoResult', '/api/v1/detect-video/', true);
+    handleUpload('uploadForm', 'fileInput', 'resultContainer', 'resultImage', '/process-image', false);
 
 </script>
 </body>
