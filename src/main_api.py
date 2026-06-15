@@ -1,66 +1,61 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Response, HTTPException
-from fastapi.responses import HTMLResponse
-from fastapi.middleware.cors import CORSMiddleware # Додано імпорт
-
-from detection_visualization import visualize, resize
-
-from config import ROOT, MODEL_PATH
+import base64
 
 import cv2 as cv
 import numpy as np
-import base64
+from fastapi import FastAPI, File, HTTPException, Response, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 
-from detector import PoliInputFaceDetector, IMAGE
+from Face_detection.src.config import MODEL_PATH, ROOT
+from Face_detection.src.detection_visualization import resize, visualize
+from Face_detection.src.detector import IMAGE, PoliInputFaceDetector
+from Face_detection.src.logger import logger
 
-app = FastAPI(
-    title="Vision Agent API",
-    version="1.0.0",
-    # lifespan=lifespan
-)
+
+app = FastAPI(title="Vision Agent API", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Дозволяє запити з будь-яких доменів (для розробки)
+    allow_origins=["*"],
     allow_credentials=False,
-    allow_methods=["*"],  # Дозволяє всі методи (GET, POST і т.д.)
-    allow_headers=["*"],  # Дозволяє всі заголовки
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
+
 def get_html_response(file_name: str) -> HTMLResponse:
-    with open(ROOT / 'templates' / file_name, "r", encoding="utf-8") as f:
+    with open(ROOT / "templates" / file_name, "r", encoding="utf-8") as f:
         return HTMLResponse(content=f.read(), status_code=200)
 
 
 @app.get("/", response_class=HTMLResponse)
-async def home_page():
+async def home_page() -> HTMLResponse:
     return get_html_response("index.html")
 
+
 @app.websocket("/api/v1/stream-detect")
-async def websocket_stream_detect(websocket: WebSocket):
-    # Приймаємо з'єднання від браузера
+async def websocket_stream_detect(websocket: WebSocket) -> None:
     await websocket.accept()
-    
-    # Ініціалізуємо ваш менеджер контексту детектора
+    logger.info("WebSocket connection established")
+
     with PoliInputFaceDetector(MODEL_PATH, running_mode=IMAGE) as detector:
         try:
             while True:
-                # 1. Отримуємо Base64 рядок зображення від клієнта  
+                # Receive base64-encoded frame from the client
                 base64_data = await websocket.receive_text()
-                
-                # 2. Декодуємо рядок назад у бінарні байти зображення
                 image_bytes = base64.b64decode(base64_data)
-                
-                # 3. Перетворюємо байти в масив NumPy для OpenCV
+
+                # Decode bytes into an OpenCV frame
                 np_array = np.frombuffer(image_bytes, dtype=np.uint8)
                 frame = cv.imdecode(np_array, cv.IMREAD_COLOR)
-                
+
                 if frame is None:
+                    logger.warning("Received an invalid frame, skipping")
                     continue
-                
-                # 4. Викликаємо ваш метод обробки зображення
+
                 detection_result = detector.detection(frame)
-                
-                # 5. Парсимо результат об'єкта MediaPipe у чистий JSON формат
+
+                # Serialize detections to JSON-compatible format
                 faces_list = []
                 if detection_result and detection_result.detections:
                     for detection in detection_result.detections:
@@ -71,50 +66,48 @@ async def websocket_stream_detect(websocket: WebSocket):
                                 "xmin": int(bbox.origin_x),
                                 "ymin": int(bbox.origin_y),
                                 "width": int(bbox.width),
-                                "height": int(bbox.height)
-                            }
+                                "height": int(bbox.height),
+                            },
                         })
-                
-                # 6. Повертаємо координати у браузер клієнта
+
                 await websocket.send_json({"detections": faces_list})
-                
+
         except WebSocketDisconnect:
-            print("Користувач закрив сторінку або вимкнув камеру (WebSocket розірвано).")
+            logger.info("WebSocket disconnected")
 
 
 @app.post("/process-image")
-async def detect_image_endpoint(file: UploadFile = File(...)):
+async def detect_image_endpoint(file: UploadFile = File(...)) -> Response:
+    logger.info("Image processing request received: %s", file.filename)
+
     try:
-        print("Отримано запит на обробку фото!") # Перевіряємо, чи доходить запит
-        
         contents = await file.read()
         nparr = np.frombuffer(contents, np.uint8)
         capture = cv.imdecode(nparr, cv.IMREAD_COLOR)
 
-        
         if capture is None:
-            raise HTTPException(status_code=400, detail="Недійсний файл зображення")
+            logger.warning("Invalid image file: %s", file.filename)
+            raise HTTPException(status_code=400, detail="Invalid image file")
 
-        # --- ТУТ ПОЧИНАЄТЬСЯ ВАША ЛОГІКА ---
-        print("Починаємо ресайз і детекцію...")
         frame = resize(capture)
-        
+
         with PoliInputFaceDetector(MODEL_PATH, running_mode=IMAGE) as detector:
             detection_result = detector.detection(frame)
             count = len(detection_result.detections) if detection_result and detection_result.detections else 0
-            print(count)
-            drawen_img = visualize(frame, detection_result)
-        # --- ТУТ ЗАКІНЧУЄТЬСЯ ВАША ЛОГІКА ---
-            
-        print("Кодуємо результат...")
-        success, encoded_image = cv.imencode('.jpg', drawen_img)
+            logger.info("Detection complete: %d face(s) found", count)
+            annotated_img = visualize(frame, detection_result)
+
+        success, encoded_image = cv.imencode(".jpg", annotated_img)
         if not success:
-            raise HTTPException(status_code=500, detail="Помилка кодування")
-            
+            logger.error("Failed to encode result image")
+            raise HTTPException(status_code=500, detail="Image encoding failed")
+
         response = Response(content=encoded_image.tobytes(), media_type="image/jpeg")
         response.headers["X-Detection-Count"] = str(count)
         return response
-        
+
+    except HTTPException:
+        raise
     except Exception as e:
-        # ЦЕ ВРЯТУЄ НАС: виведе повну помилку в термінал замість того, щоб впасти
+        logger.exception("Unexpected error during image processing")
         raise HTTPException(status_code=500, detail=str(e))
