@@ -6,10 +6,10 @@ from fastapi import FastAPI, File, HTTPException, Response, UploadFile, WebSocke
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 
-from Face_detection.src.config import MODEL_PATH, ROOT
-from Face_detection.src.detection_visualization import resize, visualize
-from Face_detection.src.detector import IMAGE, PoliInputFaceDetector
-from Face_detection.src.logger import logger
+from config import MODEL_PATH, ROOT
+from detection_visualization import resize, visualize
+from detector import IMAGE, PoliInputFaceDetector
+from logger import logger
 
 
 app = FastAPI(title="Vision Agent API", version="1.0.0")
